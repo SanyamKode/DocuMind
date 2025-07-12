@@ -6,11 +6,11 @@ import pandas as pd
 import openpyxl
 import io
 import os
+import requests
 from typing import List, Dict, Optional
 import tempfile
 import json
 import uuid
-from groq import Groq
 from datetime import datetime
 
 # Initialize FastAPI
@@ -25,8 +25,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Groq client
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Groq API configuration
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Store document sessions (in production, use Redis or database)
 document_sessions = {}
@@ -88,12 +89,17 @@ def truncate_content(content: str, max_chars: int = 30000) -> str:
         return content[:max_chars] + "\n\n[Content truncated due to length...]"
     return content
 
-def call_groq_api(prompt: str, model: str = "llama-3.2-90b-text-preview") -> str:
-    """Call Groq API with error handling"""
+def call_groq_api(prompt: str, model: str = "llama3-70b-8192") -> str:
+    """Call Groq API using requests"""
     try:
-        # Available models: llama-3.2-90b-text-preview, llama-3.1-70b-versatile, mixtral-8x7b-32768
-        chat_completion = groq_client.chat.completions.create(
-            messages=[
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": model,
+            "messages": [
                 {
                     "role": "system",
                     "content": "You are a smart document assistant specialized in analyzing financial documents, spreadsheets, and business data. Provide clear, accurate, and helpful responses based on the document content."
@@ -103,23 +109,38 @@ def call_groq_api(prompt: str, model: str = "llama-3.2-90b-text-preview") -> str
                     "content": prompt
                 }
             ],
-            model=model,
-            temperature=0.1,  # Lower temperature for more consistent responses
-            max_tokens=2000,
-        )
-        return chat_completion.choices[0].message.content
+            "temperature": 0.1,
+            "max_tokens": 2000
+        }
+        
+        response = requests.post(GROQ_API_URL, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            error_msg = f"Groq API error: {response.status_code} - {response.text}"
+            print(error_msg)
+            
+            # Fallback to smaller model if rate limited or error
+            if response.status_code == 429 or model == "llama3-70b-8192":
+                if model != "llama3-8b-8192":
+                    return call_groq_api(prompt, "llama3-8b-8192")
+            
+            raise HTTPException(status_code=500, detail=error_msg)
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"API connection error: {str(e)}")
     except Exception as e:
-        print(f"Error calling Groq API: {str(e)}")
-        # Fallback to smaller model if needed
-        if "llama-3.2-90b" in model:
-            return call_groq_api(prompt, "llama-3.1-70b-versatile")
-        raise HTTPException(status_code=500, detail=f"AI API Error: {str(e)}")
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/")
 async def root():
     return {
         "message": "Smart Document Assistant API is running!",
-        "model": "Powered by Groq with Llama 3.2",
+        "model": "Powered by Groq with Llama 3",
         "endpoints": {
             "upload": "/upload",
             "ask": "/ask",
@@ -131,6 +152,10 @@ async def root():
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process document"""
     try:
+        # Check if API key is set
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+        
         # Validate file size (10MB limit)
         content = await file.read()
         if len(content) > 10 * 1024 * 1024:
@@ -163,8 +188,8 @@ async def upload_document(file: UploadFile = File(...)):
         if len(document_sessions) > 100:
             oldest_sessions = sorted(document_sessions.items(), 
                                    key=lambda x: x[1].created_at)[:len(document_sessions)-100]
-            for session_id, _ in oldest_sessions:
-                del document_sessions[session_id]
+            for old_session_id, _ in oldest_sessions:
+                del document_sessions[old_session_id]
         
         # Get initial summary
         prompt = f"""Analyze this {doc_type} document and provide a comprehensive summary.
@@ -185,7 +210,8 @@ Keep the summary concise but informative."""
         
         try:
             summary = call_groq_api(prompt)
-        except:
+        except Exception as e:
+            print(f"Error getting summary: {str(e)}")
             summary = f"Document uploaded successfully. This is a {doc_type} file named '{file.filename}' with {len(extracted_text)} characters of content. Ask questions to analyze specific aspects of the document."
         
         return {
@@ -200,19 +226,23 @@ Keep the summary concise but informative."""
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask")
 async def ask_question(question: Question):
     """Ask a question about the uploaded document"""
     try:
+        # Check if API key is set
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+        
         # Get session
         session = document_sessions.get(question.session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found. Please upload a document first.")
         
         # Build context with relevant parts of the document
-        # For better performance, we'll try to find relevant sections
         question_lower = question.question.lower()
         
         # Extract relevant sections if the document is large
@@ -304,18 +334,24 @@ async def delete_session(session_id: str):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    try:
-        # Test Groq API
-        test_response = call_groq_api("Say 'OK' if you're working", "llama-3.1-8b-instant")
-        api_status = "healthy" if "OK" in test_response else "degraded"
-    except:
-        api_status = "unhealthy"
+    api_configured = bool(GROQ_API_KEY)
+    
+    if api_configured:
+        try:
+            # Quick test
+            test_response = call_groq_api("Say 'OK' if you're working", "llama3-8b-8192")
+            api_status = "healthy" if "OK" in test_response else "degraded"
+        except:
+            api_status = "unhealthy"
+    else:
+        api_status = "not configured"
     
     return {
         "status": "healthy",
         "api_status": api_status,
+        "api_configured": api_configured,
         "sessions": len(document_sessions),
-        "model": "Groq/Llama 3.2"
+        "model": "Groq/Llama 3"
     }
 
 @app.get("/models")
@@ -324,19 +360,24 @@ async def list_models():
     return {
         "models": [
             {
-                "id": "llama-3.2-90b-text-preview",
-                "name": "Llama 3.2 90B (Best)",
+                "id": "llama3-70b-8192",
+                "name": "Llama 3 70B",
                 "description": "Most capable model for complex analysis"
             },
             {
-                "id": "llama-3.1-70b-versatile",
-                "name": "Llama 3.1 70B",
-                "description": "Balanced performance and speed"
+                "id": "llama3-8b-8192",
+                "name": "Llama 3 8B",
+                "description": "Fast responses, good for simple queries"
             },
             {
                 "id": "mixtral-8x7b-32768",
                 "name": "Mixtral 8x7B",
-                "description": "Fast responses, good for simple queries"
+                "description": "Excellent for longer documents (32k context)"
+            },
+            {
+                "id": "gemma-7b-it",
+                "name": "Gemma 7B",
+                "description": "Google's efficient model"
             }
         ]
     }
@@ -344,4 +385,6 @@ async def list_models():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
+    print(f"Starting server on port {port}")
+    print(f"GROQ_API_KEY configured: {'Yes' if GROQ_API_KEY else 'No'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
