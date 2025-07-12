@@ -82,7 +82,7 @@ async def upload_document(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
         
         # Extract text based on file type
-       if file.filename.lower().endswith('.pdf'):
+        if file.filename.lower().endswith('.pdf'):
             extracted_text = extract_text_from_pdf(content)
             doc_type = "PDF"
         elif file.filename.lower().endswith(('.xlsx', '.xls')):
