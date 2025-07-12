@@ -5,10 +5,10 @@ echo "🚀 Smart Document Assistant Deployment Script"
 echo "==========================================="
 
 # Check if git is installed
-if ! command -v git &> /dev/null; then
-    echo "❌ Git is not installed. Please install git first."
-    exit 1
-fi
+#if ! command -v git &> /dev/null; then
+#    echo "❌ Git is not installed. Please install git first."
+#    exit 1
+#fi
 
 # 1. Initialize Git repository
 echo "📁 Initializing Git repository..."
