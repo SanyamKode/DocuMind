@@ -80,7 +80,7 @@ async def upload_document(file: UploadFile = File(...)):
         content = await file.read()
         if len(content) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
-        
+
         # Extract text based on file type
         if file.filename.lower().endswith('.pdf'):
             extracted_text = extract_text_from_pdf(content)
@@ -90,12 +90,12 @@ async def upload_document(file: UploadFile = File(...)):
             doc_type = "Excel"
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type. Please upload PDF or Excel files.")
-        
+
         # Generate session ID
         session_id = str(uuid.uuid4())
-        
+
         # Store session
-       document_sessions[session_id] = DocumentSession(
+        document_sessions[session_id] = DocumentSession(
             filename=file.filename,
             content=extracted_text[:50000],
             doc_type=doc_type
@@ -131,7 +131,7 @@ async def ask_question(question: Question):
         context = f"""You are a smart assistant analyzing a {session.doc_type} document titled '{session.filename}'.\n
         Here is the document content:\n{session.content}\n
         User's question: {question.question}\n
-        Answer concisely and use specific values if present.\n        """
+        Answer concisely and use specific values if present.\n"""
 
         response = generator(context, max_new_tokens=300, do_sample=True, temperature=0.7)
         answer = response[0]['generated_text'].split(context)[-1].strip()
@@ -150,13 +150,14 @@ async def ask_question(question: Question):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/sessions/{session_id}/history")
 async def get_chat_history(session_id: str):
     """Get chat history for a session"""
     session = document_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     return {
         "filename": session.filename,
         "doc_type": session.doc_type,
