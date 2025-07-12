@@ -26,7 +26,8 @@ app.add_middleware(
 
 # Configure Gemini (you'll need to set GEMINI_API_KEY environment variable)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+#model = genai.GenerativeModel('gemini-1.5-flash')
+chat = genai.Chat()
 
 # Store document sessions (in production, use Redis or database)
 document_sessions = {}
@@ -111,6 +112,7 @@ async def upload_document(file: UploadFile = File(...)):
         """
         
         response = model.generate_content(prompt)
+        
         
         return {
             "session_id": session_id,
